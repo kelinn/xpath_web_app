@@ -3,29 +3,32 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import InvalidSelectorException
 from webdriver_manager.chrome import ChromeDriverManager
 import openai
 import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for
-from flask_bootstrap import Bootstrap
+from flask import Flask, render_template, request, redirect, url_for, flash
+import time
 
 # Initialize Flask app
 app = Flask(__name__)
-Bootstrap(app)
+app.secret_key = 'supersecretkey'  # Needed for flash messages
 
 # Initialize OpenAI
-openai.api_key = 'YOUR KEY'
+openai.api_key = 'YOUR_OPENAI_KEY'
 
 # Initialize Selenium WebDriver
 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
 
 def scrape_webpage(url):
-    response = requests.get(url)
-    if response.status_code == 200:
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Raise HTTPError for bad responses
         page_content = response.content
         soup = BeautifulSoup(page_content, 'html.parser')
         return soup
-    else:
+    except requests.RequestException as e:
+        print(f"Request error: {e}")
         return None
 
 def get_element_structure(soup):
@@ -39,19 +42,27 @@ def generate_xpath(description):
         {"role": "user", "content": f"Generate an XPath expression for an element described as: {description}"}
     ]
 
-    response = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",
-        messages=messages
-    )
-    xpath = response['choices'][0]['message']['content'].strip()
-    return xpath
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=messages
+        )
+        xpath = response['choices'][0]['message']['content'].strip()
+        return xpath
+    except Exception as e:
+        print(f"OpenAI error: {e}")
+        return None
 
 def validate_xpath(url, xpath):
     driver.get(url)
     try:
         element = driver.find_element(By.XPATH, xpath)
         return True if element else False
-    except Exception:
+    except InvalidSelectorException as e:
+        print(f"Invalid XPath: {e}")
+        return False
+    except Exception as e:
+        print(f"Validation error: {e}")
         return False
 
 def get_absolute_xpath(element):
@@ -116,11 +127,20 @@ def get_absolute_xpath(element):
 def find_elements_by_xpath(url, description):
     driver.get(url)
     generated_xpath = generate_xpath(description)
-    elements = driver.find_elements(By.XPATH, generated_xpath)
-    absolute_xpaths = [get_absolute_xpath(element) for element in elements]
-    return generated_xpath, absolute_xpaths
+    if not generated_xpath:
+        return None, []
+    try:
+        elements = driver.find_elements(By.XPATH, generated_xpath)
+        absolute_xpaths = [get_absolute_xpath(element) for element in elements]
+        return generated_xpath, absolute_xpaths
+    except InvalidSelectorException as e:
+        print(f"Invalid XPath: {e}")
+        return None, []
+    except Exception as e:
+        print(f"Error finding elements by XPath: {e}")
+        return None, []
 
-def generate_report(description, generated_xpath, validation_result, absolute_xpaths, structure ):
+def generate_report(description, generated_xpath, validation_result,absolute_xpaths, structure):
     report = {
         'description': description,
         'generated_xpath': generated_xpath,
@@ -142,30 +162,34 @@ def index():
         # Scrape webpage and get structure
         soup = scrape_webpage(url)
         if not soup:
-            return render_template('index.html', error="Failed to scrape the webpage. Please check the URL and try again.")
+            flash("Failed to scrape the webpage. Please check the URL and try again.", "danger")
+            return render_template('index.html')
 
         structure = get_element_structure(soup)
 
         # Generate XPath and find elements
         generated_xpath, absolute_xpaths = find_elements_by_xpath(url, description)
+        if not generated_xpath:
+            flash("Failed to generate a valid XPath. Please check your description and try again.", "danger")
+            return render_template('index.html')
 
         # Validate XPath
         validation_result = validate_xpath(url, generated_xpath)
+        if not validation_result:
+            flash("The generated XPath could not locate the element. Please refine your description and try again.", "warning")
+        else:
+            flash("XPath generated and validated successfully.", "success")
 
-        # Generate Report
-        generate_report(description, generated_xpath, validation_result, absolute_xpaths, structure )
-
-        return redirect(url_for('result', description=description, generated_xpath=generated_xpath, validation_result=validation_result,xpaths=absolute_xpaths))
+        # Generate report
+        report_df = generate_report(description, generated_xpath, validation_result, absolute_xpaths, structure)
+        return render_template('result.html', 
+                               description=description,
+                               generated_xpath=generated_xpath, 
+                               validation_result=validation_result,
+                               absolute_xpaths=absolute_xpaths,
+                               report_url='/static/xpath_report.csv')
 
     return render_template('index.html')
 
-@app.route('/result')
-def result():
-    description = request.args.get('description')
-    generated_xpath = request.args.get('generated_xpath')
-    validation_result = request.args.get('validation_result')
-    xpaths = request.args.getlist('xpaths')
-    return render_template('result.html', description=description, generated_xpath=generated_xpath, validation_result=validation_result, xpaths=xpaths)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run(debug=True)
