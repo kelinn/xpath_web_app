@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Select Elements</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+</head>
+<body>
+<div class="container">
+    <h1 class="mt-5">Select Elements</h1>
+    <div class="alert alert-info">Navigate through the page in the opened browser and select elements to generate their XPaths.</div>
+    <button class="btn btn-primary" id="finishSelection">Finish Selection</button>
+</div>
+
+<script>
+    document.getElementById('finishSelection').onclick = function() {
+        fetch('/save_report', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.status === 'success') {
+                console.log('Report generated successfully');
+                window.location.href = '/result';
+            } else {
+                console.error('Error saving report:', data.message);
+            }
+        })
+        .catch(error => console.error('Error:', error));
+    };
+</script>
+</body>
+</html>

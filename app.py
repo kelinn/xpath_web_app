@@ -1,195 +1,147 @@
-import requests
-from bs4 import BeautifulSoup
+from flask import Flask, render_template, request, jsonify, redirect, url_for
 from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import InvalidSelectorException
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.firefox.service import Service as FirefoxService
 from webdriver_manager.chrome import ChromeDriverManager
+from webdriver_manager.firefox import GeckoDriverManager
+import json
 import openai
-import pandas as pd
-from flask import Flask, render_template, request, redirect, url_for, flash
+import threading
 import time
+import requests
 
-# Initialize Flask app
 app = Flask(__name__)
-app.secret_key = 'supersecretkey'  # Needed for flash messages
+app.secret_key = 'your_secret_key'
 
-# Initialize OpenAI
-openai.api_key = 'YOUR_OPENAI_KEY'
+# OpenAI API key setup
+openai.api_key = 'your_key_here'
 
-# Initialize Selenium WebDriver
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+# Dictionary to store element data
+element_data = []
+driver = None
 
-def scrape_webpage(url):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()  # Raise HTTPError for bad responses
-        page_content = response.content
-        soup = BeautifulSoup(page_content, 'html.parser')
-        return soup
-    except requests.RequestException as e:
-        print(f"Request error: {e}")
-        return None
-
-def get_element_structure(soup):
-    elements = soup.find_all()
-    structure = [{'tag': el.name, 'attrs': el.attrs} for el in elements]
-    return structure
-
-def generate_xpath(description):
-    messages = [
-        {"role": "system", "content": "You are an assistant that generates XPath expressions based on descriptions."},
-        {"role": "user", "content": f"Generate an XPath expression for an element described as: {description}"}
-    ]
-
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=messages
-        )
-        xpath = response['choices'][0]['message']['content'].strip()
-        return xpath
-    except Exception as e:
-        print(f"OpenAI error: {e}")
-        return None
-
-def validate_xpath(url, xpath):
+def open_browser(url, browser):
+    global driver
+    if browser == 'chrome':
+        driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
+    elif browser == 'firefox':
+        driver = webdriver.Firefox(service=FirefoxService(GeckoDriverManager().install()))
+    
     driver.get(url)
-    try:
-        element = driver.find_element(By.XPATH, xpath)
-        return True if element else False
-    except InvalidSelectorException as e:
-        print(f"Invalid XPath: {e}")
-        return False
-    except Exception as e:
-        print(f"Validation error: {e}")
-        return False
+    driver.maximize_window()
 
-def get_absolute_xpath(element):
-    return driver.execute_script("""
-        function absoluteXPath(element) {
-            var comp, comps = [];
-            var parent = null;
-            var xpath = '';
-            var getPos = function(element) {
-                var position = 1, curNode;
-                if (element.nodeType == Node.ATTRIBUTE_NODE) {
-                    return null;
-                }
-                for (curNode = element.previousSibling; curNode; curNode = curNode.previousSibling) {
-                    if (curNode.nodeName == element.nodeName) {
-                        ++position;
-                    }
-                }
-                return position;
-            };
-
-            if (element instanceof Document) {
-                return '/';
-            }
-
-            for (; element && !(element instanceof Document); element = element.nodeType == Node.ATTRIBUTE_NODE ? element.ownerElement : element.parentNode) {
-                comp = comps[comps.length] = {};
-                switch (element.nodeType) {
-                    case Node.TEXT_NODE:
-                        comp.name = 'text()';
-                        break;
-                    case Node.ATTRIBUTE_NODE:
-                        comp.name = '@' + element.nodeName;
-                        break;
-                    case Node.PROCESSING_INSTRUCTION_NODE:
-                        comp.name = 'processing-instruction()';
-                        break;
-                    case Node.COMMENT_NODE:
-                        comp.name = 'comment()';
-                        break;
-                    case Node.ELEMENT_NODE:
-                        comp.name = element.nodeName;
-                        break;
-                }
-                comp.position = getPos(element);
-            }
-
-            for (var i = comps.length - 1; i >= 0; i--) {
-                comp = comps[i];
-                xpath += '/' + comp.name.toLowerCase();
-                if (comp.position !== null) {
-                    xpath += '[' + comp.position + ']';
-                }
-            }
-
-            return xpath;
+    def capture_click(event):
+        element = driver.execute_script("return document.elementFromPoint(arguments[0], arguments[1])", event['x'], event['y'])
+        element_info = {
+            'tag': element.tag_name,
+            'id': element.get_attribute('id'),
+            'class': element.get_attribute('class'),
+            'name': element.get_attribute('name'),
+            'href': element.get_attribute('href')
         }
+        element_data.append(element_info)
+        print(f"Element clicked: {element_info}")
 
-        return absoluteXPath(arguments[0]);
-    """, element)
-
-def find_elements_by_xpath(url, description):
-    driver.get(url)
-    generated_xpath = generate_xpath(description)
-    if not generated_xpath:
-        return None, []
-    try:
-        elements = driver.find_elements(By.XPATH, generated_xpath)
-        absolute_xpaths = [get_absolute_xpath(element) for element in elements]
-        return generated_xpath, absolute_xpaths
-    except InvalidSelectorException as e:
-        print(f"Invalid XPath: {e}")
-        return None, []
-    except Exception as e:
-        print(f"Error finding elements by XPath: {e}")
-        return None, []
-
-def generate_report(description, generated_xpath, validation_result,absolute_xpaths, structure):
-    report = {
-        'description': description,
-        'generated_xpath': generated_xpath,
-        'validation_result': validation_result,
-        'absolute_xpaths': absolute_xpaths,
-        'webpage_structure': structure
-        
-    }
-    df = pd.DataFrame([report])
-    df.to_csv('static/xpath_report.csv', index=False)
-    return df
+    driver.execute_cdp_cmd('Runtime.enable', {})
+    driver.execute_cdp_cmd('Page.enable', {})
+    driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+        'source': """
+            document.addEventListener('click', (event) => {
+                fetch('http://127.0.0.1:5000/capture_click', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ x: event.clientX, y: event.clientY })
+                });
+            });
+        """
+    })
+    
+    while True:
+        time.sleep(1)
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
         url = request.form['url']
-        description = request.form['description']
-
-        # Scrape webpage and get structure
-        soup = scrape_webpage(url)
-        if not soup:
-            flash("Failed to scrape the webpage. Please check the URL and try again.", "danger")
-            return render_template('index.html')
-
-        structure = get_element_structure(soup)
-
-        # Generate XPath and find elements
-        generated_xpath, absolute_xpaths = find_elements_by_xpath(url, description)
-        if not generated_xpath:
-            flash("Failed to generate a valid XPath. Please check your description and try again.", "danger")
-            return render_template('index.html')
-
-        # Validate XPath
-        validation_result = validate_xpath(url, generated_xpath)
-        if not validation_result:
-            flash("The generated XPath could not locate the element. Please refine your description and try again.", "warning")
-        else:
-            flash("XPath generated and validated successfully.", "success")
-
-        # Generate report
-        report_df = generate_report(description, generated_xpath, validation_result, absolute_xpaths, structure)
-        return render_template('result.html', 
-                               description=description,
-                               generated_xpath=generated_xpath, 
-                               validation_result=validation_result,
-                               absolute_xpaths=absolute_xpaths,
-                               report_url='/static/xpath_report.csv')
-
+        browser = request.form['browser']
+        thread = threading.Thread(target=open_browser, args=(url, browser))
+        thread.start()
+        time.sleep(5)
+        return render_template('select_elements.html')
     return render_template('index.html')
+
+@app.route('/capture_click', methods=['POST'])
+def capture_click():
+    try:
+        global driver
+        event = request.json
+        element = driver.execute_script("return document.elementFromPoint(arguments[0], arguments[1])", event['x'], event['y'])
+        element_info = {
+            'tag': element.tag_name,
+            'id': element.get_attribute('id'),
+            'class': element.get_attribute('class'),
+            'name': element.get_attribute('name'),
+            'href': element.get_attribute('href')
+        }
+        element_data.append(element_info)
+        print(f"Element clicked: {element_info}")
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/save_report', methods=['POST'])
+def save_report():
+    try:
+        global element_data
+        report = []
+        for element in element_data:
+            xpath = generate_xpath_with_openai(element)
+            report.append({
+                'ID': element.get('id'),
+                'Name': element.get('name'),
+                'Class': element.get('class'),
+                'Href': element.get('href'),
+                'CSS Selector': generate_css_selector(element),
+                'Generated XPath': xpath
+            })
+        app.config['report'] = report
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/result')
+def result():
+    report = app.config.get('report', [])
+    return render_template('result.html', report=report)
+
+def generate_xpath_with_openai(element):
+    messages = [
+        {"role": "system", "content": "You are an assistant that generates XPath expressions based on descriptions."},
+        {"role": "user", "content": f"Generate an XPath for the following HTML element: {json.dumps(element)}"}
+    ]
+    
+    try:
+        response = openai.ChatCompletion.create(
+          model="gpt-3.5-turbo-0125",
+          messages=messages
+      )
+        logging.info(f"OpenAI API response: {response}")
+        xpath = response['choices'][0]['message']['content'].strip()
+        return xpath
+    except Exception as e:
+        logging.error(f"Error generating XPath with OpenAI: {e}")
+        raise
+
+def generate_css_selector(element):
+    css_selector = element.get('id', '')
+    if css_selector:
+        return f"#{css_selector}"
+    css_selector = element.get('class', '').replace(' ', '.')
+    if css_selector:
+        return f".{css_selector}"
+    return element.get('tag', '').lower()
 
 if __name__ == '__main__':
     app.run(debug=True)
