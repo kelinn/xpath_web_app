@@ -5,48 +5,130 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>XPath Generation Result</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <style>
+        .editable {
+            display: inline-block;
+        }
+        .editable-input {
+            display: none;
+        }
+    </style>
 </head>
 <body>
 <div class="container">
     <h1 class="mt-5">XPath Generation Result</h1>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <div class="mt-3">
-          {% for category, message in messages %}
-            <div class="alert alert-{{ category }}">{{ message }}</div>
-          {% endfor %}
-        </div>
-      {% endif %}
-    {% endwith %}
     {% if report %}
-    <table class="table table-bordered mt-3">
-        <thead>
-            <tr>
-                <th>Tag</th>
-                <th>ID</th>
-                <th>Class</th>
-                <th>Href</th>
-                <th>Text</th>
-                <th>Generated XPath</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for element in report %}
-            <tr>
-                <td>{{ element.tag }}</td>
-                <td>{{ element.id }}</td>
-                <td>{{ element.class }}</td>
-                <td>{{ element.href }}</td>
-                <td>{{ element.text }}</td>
-                <td>{{ element.xpath }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+        <table class="table table-bordered mt-3">
+            <thead>
+                <tr>
+                    <th>Description</th>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Class</th>
+                    <th>Href</th>
+                    <th>CSS Selector</th>
+                    <th>Generated XPath</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for index, element in enumerate(report) %}
+                    <tr data-index="{{ index }}">
+                        <td class="editable" data-field="Description">
+                            <span class="editable-text">{{ element.Description }}</span>
+                            <input type="text" class="editable-input form-control" value="{{ element.Description }}">
+                        </td>
+                        <td>{{ element.ID }}</td>
+                        <td>{{ element.Name }}</td>
+                        <td>{{ element.Class }}</td>
+                        <td>{{ element.Href }}</td>
+                        <td>{{ element['CSS Selector'] }}</td>
+                        <td>{{ element['Generated XPath'] }}</td>
+                        <td>
+                            <button class="btn btn-danger btn-sm remove-btn">Remove</button>
+                        </td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <a href="/download_csv" class="btn btn-success">Download CSV</a>
     {% else %}
-    <div class="alert alert-warning">No selected elements report available.</div>
+        <div class="alert alert-warning">No selected elements report available.</div>
     {% endif %}
-    <a href="/" class="btn btn-primary">Go Back</a>
+    <a href="/clear_data" class="btn btn-primary">Go Back</a>
 </div>
+
+<script>
+    document.querySelectorAll('.remove-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            const row = this.closest('tr');
+            const index = row.getAttribute('data-index');
+
+            fetch(`/remove_row/${index}`, {
+                method: 'DELETE',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.status === 'success') {
+                    row.remove();
+                } else {
+                    console.error('Error removing row:', data.message);
+                }
+            })
+            .catch(error => console.error('Error:', error));
+        });
+    });
+
+    document.querySelectorAll('.editable').forEach(element => {
+        const text = element.querySelector('.editable-text');
+        const input = element.querySelector('.editable-input');
+
+        text.addEventListener('click', function() {
+            text.style.display = 'none';
+            input.style.display = 'block';
+            input.focus();
+        });
+
+        input.addEventListener('blur', function() {
+            text.style.display = 'inline';
+            input.style.display = 'none';
+
+            const newValue = input.value;
+            text.textContent = newValue;
+
+            const row = element.closest('tr');
+            const index = row.getAttribute('data-index');
+            const field = element.getAttribute('data-field');
+
+            fetch(`/update_field/${index}/${field}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ value: newValue })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.status !== 'success') {
+                    console.error('Error updating field:', data.message);
+                }
+            })
+            .catch(error => console.error('Error:', error));
+        });
+    });
+</script>
 </body>
 </html>

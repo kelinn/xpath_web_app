@@ -5,16 +5,76 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Select Elements</title>
     <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <style>
+        .loader {
+            border: 16px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 16px solid #3498db;
+            width: 120px;
+            height: 120px;
+            animation: spin 2s linear infinite;
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
 </head>
 <body>
 <div class="container">
     <h1 class="mt-5">Select Elements</h1>
     <div class="alert alert-info">Navigate through the page in the opened browser and select elements to generate their XPaths.</div>
-    <button class="btn btn-primary" id="finishSelection">Finish Selection</button>
+   
+    <button class="btn btn-primary mt-2" id="finishSelection">Finish Selection</button>
+    <div class="loader" id="loader"></div>
 </div>
 
 <script>
+
+    // Function to capture click events and send data to Flask server
+    function captureElementClick(event) {
+        event.preventDefault();
+        var element = event.target;
+        var elementData = {
+            tag: element.tagName,
+            id: element.id,
+            class: element.className,
+            name: element.name,
+            href: element.href,
+            description: currentDescription
+        };
+
+        fetch('http://127.0.0.1:5000/capture_click', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(elementData)
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not ok');
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.status === 'success') {
+                console.log('Element data captured successfully');
+            } else {
+                console.error('Error capturing element data:', data.message);
+            }
+        })
+        .catch(error => console.error('Error:', error));
+    }
+
     document.getElementById('finishSelection').onclick = function() {
+        document.getElementById('loader').style.display = 'block';
         fetch('/save_report', {
             method: 'POST',
             headers: {
@@ -22,6 +82,7 @@
             },
         })
         .then(response => {
+            document.getElementById('loader').style.display = 'none';
             if (!response.ok) {
                 throw new Error('Network response was not ok');
             }

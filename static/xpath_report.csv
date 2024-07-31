@@ -1,2 +1,0 @@
-tag,id,class,xpath
-DIV,,alert alert-info,//div[@class='alert alert-info']
